@@ -1,0 +1,63 @@
+name: Version Guard
+
+on:
+  workflow_call:
+    inputs:
+      check_type:
+        required: true
+        type: string # 'docker' ou 'git-tag'
+      project_id:
+        required: false
+        type: string
+      repo_name:
+        required: false
+        type: string
+      image_name:
+        required: false
+        type: string
+    secrets:
+      gcp_credentials:
+        required: false
+
+jobs:
+  validate-version:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Check Version
+        id: get_version
+        run: |
+          VERSION=$(node -p "require('./package.json').version")
+          echo "version=$VERSION" >> $GITHUB_OUTPUT
+          
+          if [[ $VERSION == *"-rc"* ]] || [[ $VERSION == *"-alpha"* ]] || [[ $VERSION == *"-beta"* ]]; then
+            echo "❌ Error: Unstable version ($VERSION) not allowed on master."
+            exit 1
+          fi
+
+      # Validação para NestJS (Docker no Artifact Registry)
+      - name: Check Docker Image
+        if: ${{ inputs.check_type == 'docker' }}
+        run: |
+          # Autenticação via Google (usando o segredo passado) TODO: Melhorar isso usando GCP
+          echo "${{ secrets.gcp_credentials }}" > gcp-key.json
+          gcloud auth activate-service-account --key-file=gcp-key.json
+          gcloud config set project ${{ inputs.project_id }}
+          
+          IMAGE_TAG="us-central1-docker.pkg.dev/${{ inputs.project_id }}/${{ inputs.repo_name }}:${{ steps.get_version.outputs.version }}"
+          
+          if gcloud artifacts docker images describe $IMAGE_TAG >/dev/null 2>&1; then
+            echo "❌ Error: Image $IMAGE_TAG already exists. Version must be unique."
+            exit 1
+          fi
+
+      # Validação para Angular (Git Tags)
+      - name: Check Git Tag
+        if: ${{ inputs.check_type == 'git-tag' }}
+        run: |
+          git fetch --tags
+          if git rev-parse "v${{ steps.get_version.outputs.version }}" >/dev/null 2>&1; then
+            echo "❌ Error: Tag v${{ steps.get_version.outputs.version }} already exists."
+            exit 1
+          fi
