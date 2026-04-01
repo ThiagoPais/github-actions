@@ -1,0 +1,117 @@
+name: NestJS CI/CD
+
+on:
+  workflow_call:
+    inputs:
+      environment: # 'prd' ou 'hml'
+        required: true
+        type: string
+      project_id:
+        required: true
+        type: string
+      region:
+        default: 'southamerica-east1'
+        type: string
+      image_name:
+        required: true
+        type: string
+      repo_name:
+        required: true
+        type: string
+      node_version:
+        default: 20
+        type: number
+    outputs:
+      version:
+        value: ${{ jobs.code-validations.outputs.version }}
+    secrets:
+      WIF_PROVIDER:
+        required: true
+      WIF_SERVICE_ACCOUNT:
+        required: true
+
+jobs:
+  code-validations:
+    runs-on: ubuntu-latest
+    outputs:
+      version: ${{ steps.version.outputs.version }}
+
+    steps:
+      - uses: actions/checkout@v4
+      
+      - name: Setup Node
+        uses: actions/setup-node@v4
+        with:
+          node-version: ${{ inputs.node_version }}
+          cache: 'npm'
+
+      - name: Version Check
+        id: version
+        run: |
+          VERSION=$(node -p "require('./package.json').version")
+          echo "version=$VERSION" >> $GITHUB_OUTPUT
+          
+          if [[ "${{ github.ref }}" == "refs/heads/master" ]]; then
+            if [[ $VERSION == *"-rc"* ]] || [[ $VERSION == *"-alpha"* ]] || [[ $VERSION == *"-beta"* ]]; then
+              echo "❌ Error: Stable version required for Master." && exit 1
+            fi
+          else
+            if [[ $VERSION != *"-rc"* ]] && [[ $VERSION != *"-alpha"* ]] && [[ $VERSION != *"-beta"* ]]; then
+              echo "❌ Error: Development versions must have -rc, -alpha or -beta suffix." && exit 1
+            fi
+          fi
+
+      - name: Install & Test
+        run: |
+          npm ci
+          npm test -- --watchAll=false
+
+  docker-validations:
+    needs: code-validations
+    runs-on: ubuntu-latest
+
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Auth to GCP (WIF)
+        uses: 'google-github-actions/auth@v2'
+        with:
+          workload_identity_provider: ${{ secrets.WIF_PROVIDER }}
+          service_account: ${{ secrets.WIF_SERVICE_ACCOUNT }}
+
+      - name: Check if Image Exists
+        run: |
+          # Acessando a versão via needs
+          IMAGE="us-central1-docker.pkg.dev/${{ inputs.project_id }}/${{ inputs.repo_name }}/${{ inputs.image_name }}:${{ needs.code-validations.outputs.version }}"
+          if gcloud artifacts docker images describe $IMAGE >/dev/null 2>&1; then
+            echo "❌ Error: Version ${{ needs.code-validations.outputs.version }} already exists in Registry." && exit 1
+          fi
+
+      - name: Build and Push Docker
+        run: |
+          TAG="us-central1-docker.pkg.dev/${{ inputs.project_id }}/${{ inputs.repo_name }}/${{ inputs.image_name }}:${{ needs.code-validations.outputs.version }}"
+          gcloud builds submit --tag $TAG .
+
+  deploy-on-gcp:
+    needs: [code-validations, docker-validations]
+    runs-on: ubuntu-latest
+
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+      - name: Auth to GCP (WIF)
+        uses: 'google-github-actions/auth@v2'
+        with:
+          workload_identity_provider: ${{ secrets.WIF_PROVIDER }}
+          service_account: ${{ secrets.WIF_SERVICE_ACCOUNT }}
+      - name: Deploy to Cloud Run
+        run: |
+          gcloud run services replace infra/service-${{ inputs.environment }}.yaml --region ${{ inputs.region }}
+
+      - name: Create Git Tag
+        run: |
+          git tag v${{ needs.code-validations.outputs.version }}
+          git push origin v${{ needs.code-validations.outputs.version }}

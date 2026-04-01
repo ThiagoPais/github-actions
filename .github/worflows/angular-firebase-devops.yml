@@ -1,0 +1,78 @@
+name: Angular CI/CD
+
+on:
+  workflow_call:
+    inputs:
+      environment: # 'prd' ou 'hml'
+        required: true
+        type: string
+      firebase_alias: # 'prd' ou 'hml' (alias deve ser configurado com target:apply)
+        required: true
+        type: string
+    outputs:
+      version:
+        value: ${{ jobs.code-validations.outputs.version }}
+    secrets:
+      FIREBASE_TOKEN:
+        required: true
+
+jobs:
+  code-validations:
+    runs-on: ubuntu-latest
+    outputs:
+      version: ${{ steps.version.outputs.version }}
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Version Check
+        id: version
+        run: |
+          VERSION=$(node -p "require('./package.json').version")
+          echo "version=$VERSION" >> $GITHUB_OUTPUT
+          
+          if [[ "${{ github.ref }}" == "refs/heads/master" ]]; then
+            if [[ $VERSION == *"-rc"* ]] || [[ $VERSION == *"-alpha"* ]] || [[ $VERSION == *"-beta"* ]]; then
+              echo "❌ Error: Stable version required for Master." && exit 1
+            fi
+          else
+            if [[ $VERSION != *"-rc"* ]] && [[ $VERSION != *"-alpha"* ]] && [[ $VERSION != *"-beta"* ]]; then
+              echo "❌ Error: Development versions must have -rc, -alpha or -beta suffix." && exit 1
+            fi
+          fi
+
+      - name: Tag Check
+        run: |
+          git fetch --tags
+          if git rev-parse "v${{ steps.version.outputs.version }}" >/dev/null 2>&1; then
+             echo "❌ Error: Tag v${{ steps.version.outputs.version }} already exists." && exit 1
+          fi
+
+      - name: Install & Test
+        run: |
+          npm ci
+          npm test -- --watchAll=false
+
+  deploy:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Install & Build
+        run: |
+          npm ci
+          CONF="development"
+          if [ "${{ inputs.environment }}" = "prd" ]; then CONF="production"; fi
+          npm run build -- --configuration=$CONF
+      - name: Firebase Deploy
+        run: |
+          export FIREBASE_TOKEN=${{ secrets.FIREBASE_TOKEN }}
+          npx firebase-tools deploy --only hosting:${{ inputs.firebase_alias }}
+
+      - name: Create Git Tag
+        run: |
+          git tag v${{ needs.code-validations.outputs.version }}
+          git push origin v${{ needs.code-validations.outputs.version }}
