@@ -6,6 +6,9 @@ on:
       environment: # 'prd' ou 'hml'
         required: true
         type: string
+      gh_environment:
+        required: true
+        type: string
       project_id:
         required: true
         type: string
@@ -69,6 +72,8 @@ jobs:
   docker-validations:
     needs: code-validations
     runs-on: ubuntu-latest
+
+    environment: ${{ inputs.gh_environment }}
 
     steps:
       - uses: actions/checkout@v4
