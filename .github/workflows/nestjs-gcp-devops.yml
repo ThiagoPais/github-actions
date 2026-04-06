@@ -29,9 +29,9 @@ on:
         value: ${{ jobs.code-validations.outputs.version }}
     secrets:
       WIF_PROVIDER:
-        required: true
+        required: false # Required, but different for each environment. Need to be set as not required so the workflow doesn't break for not having access to environment secrets from the start.
       WIF_SERVICE_ACCOUNT:
-        required: true
+        required: false # Required, but different for each environment. Need to be set as not required so the workflow doesn't break for not having access to environment secrets from the start.
 
 jobs:
   code-validations:
@@ -101,6 +101,8 @@ jobs:
   deploy-on-gcp:
     needs: [code-validations, docker-validations]
     runs-on: ubuntu-latest
+
+    environment: ${{ inputs.gh_environment }}
 
     steps:
       - uses: actions/checkout@v4
