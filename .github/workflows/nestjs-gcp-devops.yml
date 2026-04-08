@@ -29,9 +29,12 @@ on:
         value: ${{ jobs.code-validations.outputs.version }}
     secrets:
       WIF_PROVIDER:
-        required: false # Required, but different for each environment. Need to be set as not required so the workflow doesn't break for not having access to environment secrets from the start.
+        required: true
       WIF_SERVICE_ACCOUNT:
-        required: false # Required, but different for each environment. Need to be set as not required so the workflow doesn't break for not having access to environment secrets from the start.
+        required: true
+
+env:
+  FORCE_JAVASCRIPT_ACTIONS_TO_NODE24: true
 
 jobs:
   code-validations:
