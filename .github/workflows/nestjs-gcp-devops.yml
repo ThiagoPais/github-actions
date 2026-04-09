@@ -41,6 +41,7 @@ jobs:
     runs-on: ubuntu-latest
     outputs:
       version: ${{ steps.version.outputs.version }}
+      skip_deploy: ${{ steps.version.outputs.skip_deploy }}
 
     steps:
       - uses: actions/checkout@v4
@@ -53,27 +54,49 @@ jobs:
 
       - name: Version Check
         id: version
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: |
           VERSION=$(node -p "require('./package.json').version")
           echo "version=$VERSION" >> $GITHUB_OUTPUT
+          echo "skip_deploy=false" >> $GITHUB_OUTPUT
           
           if [[ "${{ github.ref }}" == "refs/heads/master" ]]; then
             if [[ $VERSION == *"-rc"* ]] || [[ $VERSION == *"-alpha"* ]] || [[ $VERSION == *"-beta"* ]]; then
               echo "❌ Error: Stable version required for Master." && exit 1
             fi
-          else
+            
+          elif [[ "${{ github.ref }}" == "refs/heads/develop" ]]; then
             if [[ $VERSION != *"-rc"* ]] && [[ $VERSION != *"-alpha"* ]] && [[ $VERSION != *"-beta"* ]]; then
-              echo "❌ Error: Development versions must have -rc, -alpha or -beta suffix." && exit 1
+              echo "⚠️ Stable version ($VERSION) detected on develop!"
+              
+              git fetch --tags
+              if git rev-parse "v$VERSION" >/dev/null 2>&1; then
+                 echo "❌ Error: Version v$VERSION already exists. Increment the version in package.json." && exit 1
+              fi
+              
+              PR_EXISTS=$(gh pr list --head develop --base master --state open --json number | jq '. | length')
+              
+              if [ "$PR_EXISTS" -eq "0" ]; then
+                echo "🚀 Creating automatic Pull Request for master..."
+                gh pr create --base master --head develop --title "🚀 Release v$VERSION" --body "Release automatizada gerada a partir da branch develop para a versão **v$VERSION**."
+              else
+                echo "⚠️ A Pull Request from develop to master already exists. Updating code there."
+
+                echo "skip_deploy=true" >> $GITHUB_OUTPUT
+              exit 0
             fi
           fi
 
       - name: Install & Test
+        if: steps.version.outputs.skip_deploy != 'true'
         run: |
           npm ci
           npm test -- --watchAll=false
 
   docker-validations:
     needs: code-validations
+    if: needs.code-validations.outputs.skip_deploy != 'true'
     runs-on: ubuntu-latest
 
     environment: ${{ inputs.gh_environment }}
@@ -91,18 +114,19 @@ jobs:
 
       - name: Check if Image Exists
         run: |
-          IMAGE="us-central1-docker.pkg.dev/${{ inputs.project_id }}/${{ inputs.repo_name }}/${{ inputs.image_name }}:${{ needs.code-validations.outputs.version }}"
+          IMAGE="${{ inputs.region }}-docker.pkg.dev/${{ inputs.project_id }}/${{ inputs.repo_name }}/${{ inputs.image_name }}:${{ needs.code-validations.outputs.version }}"
           if gcloud artifacts docker images describe $IMAGE >/dev/null 2>&1; then
             echo "❌ Error: Version ${{ needs.code-validations.outputs.version }} already exists in Registry." && exit 1
           fi
 
       - name: Build and Push Docker
         run: |
-          TAG="us-central1-docker.pkg.dev/${{ inputs.project_id }}/${{ inputs.repo_name }}/${{ inputs.image_name }}:${{ needs.code-validations.outputs.version }}"
+          TAG="${{ inputs.region }}-docker.pkg.dev/${{ inputs.project_id }}/${{ inputs.repo_name }}/${{ inputs.image_name }}:${{ needs.code-validations.outputs.version }}"
           gcloud builds submit --tag $TAG .
 
   deploy-on-gcp:
     needs: [code-validations, docker-validations]
+    if: needs.code-validations.outputs.skip_deploy != 'true'
     runs-on: ubuntu-latest
 
     environment: ${{ inputs.gh_environment }}
