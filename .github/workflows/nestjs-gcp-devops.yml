@@ -127,7 +127,13 @@ jobs:
       - name: Build and Push Docker
         run: |
           TAG="${{ inputs.region }}-docker.pkg.dev/${{ inputs.project_id }}/${{ inputs.repo_name }}/${{ inputs.image_name }}:${{ needs.code-validations.outputs.version }}"
-          gcloud builds submit --tag $TAG --suppress-logs .
+
+          BUILD_ID=$(gcloud builds submit --tag $TAG --async --format='value(id)' .)
+          echo "Build iniciado com ID: $BUILD_ID"
+          
+          echo "Aguardando conclusão do build..."
+          gcloud builds wait $BUILD_ID --project=${{ inputs.project_id }}
+          echo "Docker image $TAG criada e enviada para o Artifact Registry com sucesso!"
 
   deploy-on-gcp:
     needs: [code-validations, docker-validations]
