@@ -6,60 +6,113 @@ on:
       environment: # 'prd' ou 'hml'
         required: true
         type: string
+      gh_environment:
+        required: true
+        type: string
+      project_id:
+        required: true
+        type: string
       firebase_alias: # 'prd' ou 'hml' (alias deve ser configurado com target:apply)
         required: true
         type: string
+      node_version:
+        default: 20
+        type: number
     outputs:
       version:
         value: ${{ jobs.code-validations.outputs.version }}
     secrets:
-      FIREBASE_TOKEN:
+      WIF_PROVIDER:
         required: true
+      WIF_SERVICE_ACCOUNT:
+        required: true
+
+env:
+  FORCE_JAVASCRIPT_ACTIONS_TO_NODE24: true
 
 jobs:
   code-validations:
     runs-on: ubuntu-latest
     outputs:
       version: ${{ steps.version.outputs.version }}
+      skip_deploy: ${{ steps.version.outputs.skip_deploy }}
+    
     steps:
       - uses: actions/checkout@v4
         with:
           fetch-depth: 0
 
-      - name: Version Check
+      - name: Setup Node
+        uses: actions/setup-node@v4
+        with:
+          node-version: ${{ inputs.node_version }}
+          cache: 'npm'
+
+      - name: Version Check & Auto-PR
         id: version
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: |
           VERSION=$(node -p "require('./package.json').version")
           echo "version=$VERSION" >> $GITHUB_OUTPUT
+          echo "skip_deploy=false" >> $GITHUB_OUTPUT
           
           if [[ "${{ github.ref }}" == "refs/heads/master" ]]; then
             if [[ $VERSION == *"-rc"* ]] || [[ $VERSION == *"-alpha"* ]] || [[ $VERSION == *"-beta"* ]]; then
               echo "❌ Error: Stable version required for Master." && exit 1
             fi
-          else
+
+            git fetch --tags
+            if git rev-parse "v$VERSION" >/dev/null 2>&1; then
+                echo "❌ Error: Version v$VERSION already exists. Increment the version in package.json." && exit 1
+            fi
+            
+          elif [[ "${{ github.ref }}" == "refs/heads/develop" ]]; then
             if [[ $VERSION != *"-rc"* ]] && [[ $VERSION != *"-alpha"* ]] && [[ $VERSION != *"-beta"* ]]; then
-              echo "❌ Error: Development versions must have -rc, -alpha or -beta suffix." && exit 1
+              echo "⚠️ Stable version ($VERSION) detected on develop!"
+              
+              git fetch --tags
+              if git rev-parse "v$VERSION" >/dev/null 2>&1; then
+                 echo "❌ Error: Version v$VERSION already exists. Increment the version in package.json." && exit 1
+              fi
+              
+              PR_EXISTS=$(gh pr list --head develop --base master --state open --json number | jq '. | length')
+              
+              if [ "$PR_EXISTS" -eq "0" ]; then
+                echo "🚀 Creating automatic Pull Request for master..."
+                gh pr create --base master --head develop --title "🚀 Release v$VERSION" --body "Release automatizada gerada a partir da branch develop para a versão **v$VERSION**."
+              else
+                echo "⚠️ A Pull Request from develop to master already exists."
+              fi
+              
+              echo "skip_deploy=true" >> $GITHUB_OUTPUT
+              exit 0
             fi
           fi
 
-      - name: Tag Check
-        run: |
-          git fetch --tags
-          if git rev-parse "v${{ steps.version.outputs.version }}" >/dev/null 2>&1; then
-             echo "❌ Error: Tag v${{ steps.version.outputs.version }} already exists." && exit 1
-          fi
-
       - name: Install & Test
+        if: steps.version.outputs.skip_deploy != 'true'
         run: |
           npm ci
           npm test -- --watchAll=false
 
   deploy:
+    needs: code-validations
+    if: needs.code-validations.outputs.skip_deploy != 'true'
     runs-on: ubuntu-latest
+    
+    environment: ${{ inputs.gh_environment }}
+
     steps:
       - uses: actions/checkout@v4
         with:
           fetch-depth: 0
+
+      - name: Setup Node
+        uses: actions/setup-node@v4
+        with:
+          node-version: ${{ inputs.node_version }}
+          cache: 'npm'
 
       - name: Install & Build
         run: |
@@ -67,10 +120,16 @@ jobs:
           CONF="development"
           if [ "${{ inputs.environment }}" = "prd" ]; then CONF="production"; fi
           npm run build -- --configuration=$CONF
+
+      - name: Auth to GCP (WIF)
+        uses: google-github-actions/auth@v2
+        with:
+          workload_identity_provider: ${{ secrets.WIF_PROVIDER }}
+          service_account: ${{ secrets.WIF_SERVICE_ACCOUNT }}
+
       - name: Firebase Deploy
         run: |
-          export FIREBASE_TOKEN=${{ secrets.FIREBASE_TOKEN }}
-          npx firebase-tools deploy --only hosting:${{ inputs.firebase_alias }}
+          npx firebase-tools deploy --only hosting:${{ inputs.firebase_alias }} --project ${{ inputs.project_id }}
 
       - name: Create Git Tag
         run: |
