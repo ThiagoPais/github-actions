@@ -59,12 +59,30 @@ gcloud projects add-iam-policy-binding "${PROJECT_ID}" \
 ```
 
 ### 1.4 Configurar o WIF (Workload Identity Federation)
+
 Configure um Pool e um Provider para o GitHub. (Siga a [documentação oficial do Google](https://cloud.google.com/iam/docs/workload-identity-federation-with-deployment-pipelines) para criar o provider).
 Anote os dois valores gerados:
 
 Provider ID: `projects/NUMERO/locations/global/workloadIdentityPools/MEU_POOL/providers/MEU_PROVIDER`
 
 Service Account Email: O email da `github-deployer` criada no passo 1.1.
+
+### 1.5 Segurança Adicional: Attribute Conditions (Múltiplos Repositórios)
+
+Por padrão, o Google Cloud pode bloquear o acesso se o seu WIF Provider estiver configurado para confiar apenas em um repositório específico. Para permitir que todos os repositórios do projeto consigam fazer o deploy utilizando o mesmo Pool/Provider, você precisa ajustar as **Attribute Conditions** no console do GCP.
+
+1. Acesse **Workload Identity Federation** no GCP.
+2. Edite o Provider configurado para o GitHub.
+3. Vá até a seção **Attribute conditions**.
+4. Atualize a regra para confiar em múltiplos repositórios ou em toda a organização:
+
+**Opção A (Múltiplos repositórios específicos - Mais seguro):**
+`assertion.repository == 'SuaOrganizacao/projeto-backend' || assertion.repository == 'SuaOrganizacao/projeto-frontend'`
+
+**Opção B (Toda a organização - Mais fácil para escalar):**
+`assertion.repository_owner == 'SuaOrganizacao'`
+
+*Nota: Sem essa configuração, seu workflow de CI/CD retornará um erro `403 Forbidden` durante o passo de Auth.*
 
 ## 🔒 2. Configuração no GitHub
 
