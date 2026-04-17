@@ -122,17 +122,19 @@ jobs:
           npm run build -- --configuration=$CONF
 
       - name: Auth to GCP (WIF)
+        id: auth
         uses: google-github-actions/auth@v2
         with:
           workload_identity_provider: ${{ secrets.WIF_PROVIDER }}
           service_account: ${{ secrets.WIF_SERVICE_ACCOUNT }}
+          token_format: 'access_token'
 
       - name: Firebase Deploy
         run: |
-          export FIREBASE_TOKEN=$(gcloud auth print-access-token)
-          
           npx firebase-tools deploy --only hosting:${{ inputs.firebase_alias }} --project ${{ inputs.project_id }} --non-interactive
-
+        env:
+          FIREBASE_TOKEN: ${{ steps.auth.outputs.access_token }}
+          
       - name: Create Git Tag
         run: |
           git tag v${{ needs.code-validations.outputs.version }}
