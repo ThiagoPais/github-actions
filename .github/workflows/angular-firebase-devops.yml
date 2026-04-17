@@ -134,8 +134,8 @@ jobs:
           npx firebase-tools deploy --only hosting:${{ inputs.firebase_alias }} --project ${{ inputs.project_id }} --non-interactive
         env:
           FIREBASE_TOKEN: ${{ steps.auth.outputs.access_token }}
-          
+
       - name: Create Git Tag
         run: |
           git tag v${{ needs.code-validations.outputs.version }}
-          git push origin v${{ needs.code-validations.outputs.version }}
+          git push origin v${{ needs.code-validations.outputs.version }} --no-verify
