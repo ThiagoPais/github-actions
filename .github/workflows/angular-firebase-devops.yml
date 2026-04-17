@@ -129,7 +129,9 @@ jobs:
 
       - name: Firebase Deploy
         run: |
-          npx firebase-tools deploy --only hosting:${{ inputs.firebase_alias }} --project ${{ inputs.project_id }}
+          export FIREBASE_TOKEN=$(gcloud auth print-access-token)
+          
+          npx firebase-tools deploy --only hosting:${{ inputs.firebase_alias }} --project ${{ inputs.project_id }} --non-interactive
 
       - name: Create Git Tag
         run: |
